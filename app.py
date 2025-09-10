@@ -8,6 +8,7 @@ import time
 import io
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from tensorflow.keras.layers import LSTM, Reshape
 
 # ======================
 # 🔹 App Title & Sidebar
