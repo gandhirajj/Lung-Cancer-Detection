@@ -29,7 +29,7 @@ symptoms = st.sidebar.multiselect("Symptoms", ["Cough", "Chest Pain", "Shortness
 # ------------------
 @st.cache_resource
 def load_main_model():
-    return load_model("load_model.h5")  # replace with your lung model path
+    return load_model("lung_model.h5")  # replace with your lung model path
 
 model = load_main_model()
 model_version = "v1.0"
