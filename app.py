@@ -29,7 +29,7 @@ symptoms = st.sidebar.multiselect("Symptoms", ["Cough", "Chest Pain", "Shortness
 # ------------------
 @st.cache_resource
 def load_main_model():
-    return load_model("model.h5", compile=False)
+    return load_model("model.h5", compile=False, custom_objects={"LSTM": LSTM, "Reshape": Reshape})
 
 
 model = load_main_model()
