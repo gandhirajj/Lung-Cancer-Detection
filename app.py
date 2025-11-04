@@ -38,61 +38,41 @@ model_version = "v1.0"
 # Helper Functions
 # ------------------
 def is_valid_xray(pil_img):
-    """Enhanced validation for grayscale or near-grayscale medical images."""
+    """Basic validation for image brightness and contrast (no grayscale restriction)."""
     try:
         img = np.array(pil_img)
-        if len(img.shape) == 2:  # pure grayscale
-            img_gray = img
-            diff_rg = diff_rb = diff_gb = 0
+        if len(img.shape) == 2:  # grayscale
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
         elif len(img.shape) == 3 and img.shape[2] == 3:
-            # compute channel differences
-            diff_rg = np.mean(np.abs(img[:, :, 0] - img[:, :, 1]))
-            diff_rb = np.mean(np.abs(img[:, :, 0] - img[:, :, 2]))
-            diff_gb = np.mean(np.abs(img[:, :, 1] - img[:, :, 2]))
-
-            # allow small differences (JPEG artifacts, slight color tint)
-            if not (diff_rg < 15 and diff_rb < 15 and diff_gb < 15):
-                # Not strictly grayscale but may still pass with warning
-                return "warning"
-
-            # convert to grayscale
-            img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            img_rgb = img
         else:
             return False
 
-        # check brightness range
-        mean_intensity = np.mean(img_gray)
-        if mean_intensity > 240 or mean_intensity < 10:
+        mean_intensity = np.mean(img_rgb)
+        if mean_intensity > 240 or mean_intensity < 20:
             return False
 
-        # basic edge density test
-        img_resized = cv2.resize(img_gray, (224, 224))
-        edges = cv2.Canny(img_resized, 30, 100)
+        img_resized = cv2.resize(img_rgb, (224, 224))
+        edges = cv2.Canny(cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY), 50, 150)
         edge_density = np.sum(edges) / edges.size
-        if edge_density < 0.002:  # less strict
+        if edge_density < 0.005:
             return False
 
         return True
-    except Exception as e:
-        print("Validation error:", e)
+    except:
         return False
 
-
 def preprocess(img):
-    """Preprocess image for model input (convert to grayscale then stack to 3 channels)."""
+    """Preprocess image for model input (RGB only)."""
     img = np.array(img)
-    if len(img.shape) == 2:  # grayscale
-        img_gray = img
-    else:
-        img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    if len(img.shape) == 2:  # convert grayscale to RGB
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    elif img.shape[2] == 4:  # RGBA → RGB
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
 
-    img_resized = cv2.resize(img_gray, (224, 224))
+    img_resized = cv2.resize(img, (224, 224))
     img_normalized = img_resized / 255.0
-
-    # model expects 3 channels → stack grayscale into RGB shape
-    img_stacked = np.stack((img_normalized,) * 3, axis=-1)
-    return np.expand_dims(img_stacked, axis=0)
-
+    return np.expand_dims(img_normalized, axis=0)
 
 def generate_gradcam(model, img_array, last_conv_layer_name=None):
     """Generate Grad-CAM heatmap for last conv layer."""
@@ -118,10 +98,8 @@ def generate_gradcam(model, img_array, last_conv_layer_name=None):
     conv_outputs = conv_outputs[0]
     heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_outputs), axis=-1)
     heatmap = np.maximum(heatmap, 0) / (np.max(heatmap) + 1e-8)
-
     heatmap = cv2.resize(heatmap, (224, 224))
     return heatmap, int(class_idx)
-
 
 def overlay_heatmap(original_img, heatmap, alpha=0.4):
     """Overlay heatmap on original image."""
@@ -130,7 +108,6 @@ def overlay_heatmap(original_img, heatmap, alpha=0.4):
     heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     overlay = cv2.addWeighted(img, 1 - alpha, heatmap, alpha, 0)
     return overlay
-
 
 def export_pdf(report_text, img, heatmap_img, filename="report.pdf"):
     """Generate PDF report with findings and images."""
@@ -144,7 +121,6 @@ def export_pdf(report_text, img, heatmap_img, filename="report.pdf"):
         text_obj.textLine(line)
     c.drawText(text_obj)
 
-    # Add images
     if img is not None:
         img_rgb = img.convert("RGB").resize((200, 200))
         img_rgb.save("xray_temp.png")
@@ -165,19 +141,14 @@ uploaded_file = st.file_uploader("📤 Upload Lung CT Scan / X-ray", type=["png"
 
 if uploaded_file:
     img = Image.open(uploaded_file)
-    validation_result = is_valid_xray(img)
 
-    if validation_result is False:
-        st.error("❌ This is not a valid lung X-ray/CT scan. Please upload a proper grayscale medical image.")
+    if not is_valid_xray(img):
+        st.error("❌ Invalid or poor-quality medical image. Please upload a clear X-ray/CT image.")
     else:
-        if validation_result == "warning":
-            st.warning("⚠️ This image appears grayscale-like but may not be a medical X-ray. Proceeding for demo purposes.")
-
         col1, col2 = st.columns(2)
         with col1:
             st.image(img, caption="Original Lung Scan", use_column_width=True)
 
-        # Prediction
         start_time = time.time()
         img_array = preprocess(img)
         prediction = model.predict(img_array)[0]
@@ -190,11 +161,10 @@ if uploaded_file:
 
         with col2:
             st.metric("Prediction", label)
-            st.metric("Confidence", f"{confidence * 100:.2f}%")
+            st.metric("Confidence", f"{confidence*100:.2f}%")
             st.metric("Inference Time", f"{inference_time:.2f} sec")
             st.metric("Model Version", model_version)
 
-        # Grad-CAM
         heatmap, _ = generate_gradcam(model, img_array)
         overlay = overlay_heatmap(img, heatmap)
 
@@ -205,19 +175,17 @@ if uploaded_file:
         with col4:
             st.image(overlay, caption="Highlighted Regions", use_column_width=True)
 
-        # Recommendations
         st.subheader("🧪 Explainability & Recommendations")
         if label == "Malignant":
-            st.error("⚠️ Malignant nodule detected. Please consult an oncologist immediately.")
+            st.error("⚠ Malignant nodule detected. Please consult an oncologist immediately.")
         elif label == "Benign":
-            st.warning("⚠️ Benign nodule detected. Regular monitoring and doctor follow-up recommended.")
+            st.warning("⚠ Benign nodule detected. Regular monitoring and doctor follow-up recommended.")
         else:
             st.success("✅ Normal lungs detected. Continue regular health check-ups.")
 
         if symptoms:
             st.info(f"📌 Reported symptoms: {', '.join(symptoms)}")
 
-        # PDF Export
         st.subheader("📤 Export Report")
         report_text = f"""
         Patient Report
@@ -228,7 +196,7 @@ if uploaded_file:
         Symptoms: {', '.join(symptoms) if symptoms else 'None'}
 
         Prediction: {label}
-        Confidence: {confidence * 100:.2f}%
+        Confidence: {confidence*100:.2f}%
         Inference Time: {inference_time:.2f} sec
         Model Version: {model_version}
         """
