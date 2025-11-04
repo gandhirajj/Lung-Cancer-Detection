@@ -38,34 +38,45 @@ model_version = "v1.0"
 # Helper Functions
 # ------------------
 def is_valid_xray(pil_img):
-    """Basic checks to validate grayscale medical images."""
+    """Enhanced validation for grayscale or near-grayscale medical images."""
     try:
         img = np.array(pil_img)
-        if len(img.shape) == 2:  # already grayscale
+        if len(img.shape) == 2:  # pure grayscale
             img_gray = img
-        elif len(img.shape) == 3 and img.shape[2] == 3:  # RGB image
-            diff_rg = np.abs(img[:,:,0] - img[:,:,1]).mean()
-            diff_rb = np.abs(img[:,:,0] - img[:,:,2]).mean()
-            diff_gb = np.abs(img[:,:,1] - img[:,:,2]).mean()
-            if not (diff_rg < 2 and diff_rb < 2 and diff_gb < 2):
-                return False
+            diff_rg = diff_rb = diff_gb = 0
+        elif len(img.shape) == 3 and img.shape[2] == 3:
+            # compute channel differences
+            diff_rg = np.mean(np.abs(img[:, :, 0] - img[:, :, 1]))
+            diff_rb = np.mean(np.abs(img[:, :, 0] - img[:, :, 2]))
+            diff_gb = np.mean(np.abs(img[:, :, 1] - img[:, :, 2]))
+
+            # allow small differences (JPEG artifacts, slight color tint)
+            if not (diff_rg < 15 and diff_rb < 15 and diff_gb < 15):
+                # Not strictly grayscale but may still pass with warning
+                return "warning"
+
+            # convert to grayscale
             img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         else:
             return False
 
+        # check brightness range
         mean_intensity = np.mean(img_gray)
-        if mean_intensity > 230 or mean_intensity < 40:
+        if mean_intensity > 240 or mean_intensity < 10:
             return False
 
+        # basic edge density test
         img_resized = cv2.resize(img_gray, (224, 224))
-        edges = cv2.Canny(img_resized, 50, 150)
+        edges = cv2.Canny(img_resized, 30, 100)
         edge_density = np.sum(edges) / edges.size
-        if edge_density < 0.01:
+        if edge_density < 0.002:  # less strict
             return False
 
         return True
-    except:
+    except Exception as e:
+        print("Validation error:", e)
         return False
+
 
 def preprocess(img):
     """Preprocess image for model input (convert to grayscale then stack to 3 channels)."""
@@ -79,13 +90,13 @@ def preprocess(img):
     img_normalized = img_resized / 255.0
 
     # model expects 3 channels → stack grayscale into RGB shape
-    img_stacked = np.stack((img_normalized,)*3, axis=-1)
+    img_stacked = np.stack((img_normalized,) * 3, axis=-1)
     return np.expand_dims(img_stacked, axis=0)
+
 
 def generate_gradcam(model, img_array, last_conv_layer_name=None):
     """Generate Grad-CAM heatmap for last conv layer."""
     if last_conv_layer_name is None:
-        # auto pick the last conv layer
         for layer in reversed(model.layers):
             if isinstance(layer, tf.keras.layers.Conv2D):
                 last_conv_layer_name = layer.name
@@ -111,13 +122,15 @@ def generate_gradcam(model, img_array, last_conv_layer_name=None):
     heatmap = cv2.resize(heatmap, (224, 224))
     return heatmap, int(class_idx)
 
+
 def overlay_heatmap(original_img, heatmap, alpha=0.4):
     """Overlay heatmap on original image."""
     img = np.array(original_img.convert("RGB").resize((224, 224)))
     heatmap = np.uint8(255 * heatmap)
     heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    overlay = cv2.addWeighted(img, 1-alpha, heatmap, alpha, 0)
+    overlay = cv2.addWeighted(img, 1 - alpha, heatmap, alpha, 0)
     return overlay
+
 
 def export_pdf(report_text, img, heatmap_img, filename="report.pdf"):
     """Generate PDF report with findings and images."""
@@ -135,11 +148,11 @@ def export_pdf(report_text, img, heatmap_img, filename="report.pdf"):
     if img is not None:
         img_rgb = img.convert("RGB").resize((200, 200))
         img_rgb.save("xray_temp.png")
-        c.drawImage("xray_temp.png", 40, height//2 - 100, width=200, preserveAspectRatio=True)
+        c.drawImage("xray_temp.png", 40, height // 2 - 100, width=200, preserveAspectRatio=True)
     if heatmap_img is not None:
         heatmap_pil = Image.fromarray(heatmap_img)
         heatmap_pil.save("heatmap_temp.png")
-        c.drawImage("heatmap_temp.png", 280, height//2 - 100, width=200, preserveAspectRatio=True)
+        c.drawImage("heatmap_temp.png", 280, height // 2 - 100, width=200, preserveAspectRatio=True)
 
     c.save()
     buffer.seek(0)
@@ -152,10 +165,14 @@ uploaded_file = st.file_uploader("📤 Upload Lung CT Scan / X-ray", type=["png"
 
 if uploaded_file:
     img = Image.open(uploaded_file)
+    validation_result = is_valid_xray(img)
 
-    if not is_valid_xray(img):
+    if validation_result is False:
         st.error("❌ This is not a valid lung X-ray/CT scan. Please upload a proper grayscale medical image.")
     else:
+        if validation_result == "warning":
+            st.warning("⚠️ This image appears grayscale-like but may not be a medical X-ray. Proceeding for demo purposes.")
+
         col1, col2 = st.columns(2)
         with col1:
             st.image(img, caption="Original Lung Scan", use_column_width=True)
@@ -173,7 +190,7 @@ if uploaded_file:
 
         with col2:
             st.metric("Prediction", label)
-            st.metric("Confidence", f"{confidence*100:.2f}%")
+            st.metric("Confidence", f"{confidence * 100:.2f}%")
             st.metric("Inference Time", f"{inference_time:.2f} sec")
             st.metric("Model Version", model_version)
 
@@ -211,7 +228,7 @@ if uploaded_file:
         Symptoms: {', '.join(symptoms) if symptoms else 'None'}
 
         Prediction: {label}
-        Confidence: {confidence*100:.2f}%
+        Confidence: {confidence * 100:.2f}%
         Inference Time: {inference_time:.2f} sec
         Model Version: {model_version}
         """
