@@ -309,11 +309,17 @@ def generate_gradcam(model, img_array, last_conv_layer_name=None):
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(img_array)
 
-        # 🔥 FIX: Always convert predictions to a Tensor
+        # Ensure predictions is a tensor
         predictions = tf.convert_to_tensor(predictions)
 
-        class_idx = tf.argmax(predictions[0])
-        loss = predictions[:, class_idx]
+        # Flatten predictions → handles (1,3), (1,1,3), (1,3,1) etc.
+        pred_flat = tf.reshape(predictions, (-1,))
+
+        # Get most likely class
+        class_idx = tf.argmax(pred_flat)
+
+        # Loss = score of predicted class
+        loss = pred_flat[class_idx]
 
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
@@ -325,6 +331,7 @@ def generate_gradcam(model, img_array, last_conv_layer_name=None):
     heatmap = cv2.resize(heatmap, (224, 224))
 
     return heatmap, int(class_idx)
+
 
 
 def overlay_heatmap(original_img, heatmap, alpha=0.4):
