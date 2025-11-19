@@ -221,39 +221,42 @@ import io
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-# =====================================================
-# 🔹 APP TITLE & METADATA
-# =====================================================
+# ======================
+# 🔹 App Title & Sidebar
+# ======================
 st.set_page_config(page_title="Lung Cancer Detector", page_icon="🫁", layout="wide")
-st.title("🫁 Lung Cancer Detection Dashboard")
+st.title("Lung Cancer Detection Dashboard")
 st.sidebar.header("📁 Patient Metadata")
 
-# =====================================================
-# 🔹 PATIENT INFORMATION
-# =====================================================
+# ------------------
+# Patient Information
+# ------------------
 age = st.sidebar.number_input("Age", min_value=1, max_value=120, step=1)
 gender = st.sidebar.radio("Gender", ["Male", "Female", "Other"])
 smoking_history = st.sidebar.selectbox("Smoking History", ["Non-smoker", "Former smoker", "Current smoker"])
-symptoms = st.sidebar.multiselect("Symptoms", ["Cough", "Chest Pain", "Shortness of Breath", "Weight Loss", "Fatigue"])
+symptoms = st.sidebar.multiselect(
+    "Symptoms", ["Cough", "Chest Pain", "Shortness of Breath", "Weight Loss", "Fatigue"]
+)
 
-# =====================================================
-# 🔹 LOAD MODEL
-# =====================================================
+# ------------------
+# Load Model
+# ------------------
 @st.cache_resource
 def load_main_model():
-    return load_model("lung_model.h5")  # Update model file name if needed
+    return load_model("lung_model.h5")  # replace with your lung model path
 
 model = load_main_model()
 model_version = "v1.0"
 
-# =====================================================
-# 🔹 IMAGE VALIDATION
-# =====================================================
+
+# ------------------
+# Helper Functions
+# ------------------
 def is_valid_xray(pil_img):
+    """Basic validation for brightness, noise, edges."""
     try:
         img = np.array(pil_img)
-
-        if len(img.shape) == 2:  
+        if len(img.shape) == 2:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
         elif len(img.shape) == 3 and img.shape[2] == 3:
             img_rgb = img
@@ -274,10 +277,9 @@ def is_valid_xray(pil_img):
     except:
         return False
 
-# =====================================================
-# 🔹 PREPROCESSING
-# =====================================================
+
 def preprocess(img):
+    """Preprocess image for model input."""
     img = np.array(img)
     if len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
@@ -288,11 +290,14 @@ def preprocess(img):
     img_normalized = img_resized / 255.0
     return np.expand_dims(img_normalized, axis=0)
 
-# =====================================================
-# 🔹 FIXED GRAD-CAM FUNCTION
-# =====================================================
-def generate_gradcam(model, img_array, last_conv_layer_name=None):
 
+# ==========================
+# ✅ FIXED SAFE GRAD-CAM
+# ==========================
+def generate_gradcam(model, img_array, last_conv_layer_name=None):
+    """Generate Grad-CAM heatmap (Safe on all TF models)."""
+
+    # Find last conv layer
     if last_conv_layer_name is None:
         for layer in reversed(model.layers):
             if isinstance(layer, tf.keras.layers.Conv2D):
@@ -300,32 +305,35 @@ def generate_gradcam(model, img_array, last_conv_layer_name=None):
                 break
 
     grad_model = tf.keras.models.Model(
-        [model.inputs],
-        [model.get_layer(last_conv_layer_name).output, model.output]
+        inputs=[model.inputs],
+        outputs=[model.get_layer(last_conv_layer_name).output, model.output]
     )
 
     with tf.GradientTape() as tape:
         conv_outputs, predictions = grad_model(img_array)
+
+        # Ensure predictions is a Tensor
         predictions = tf.convert_to_tensor(predictions)
 
         class_idx = tf.argmax(predictions[0])
-        loss = predictions[0, class_idx]
 
+        # SAFE: avoid Tensor slicing errors
+        loss = tf.gather(predictions[0], class_idx)
+
+    # Compute gradients
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
     conv_outputs = conv_outputs[0]
-    heatmap = tf.reduce_sum(tf.multiply(pooled_grads, conv_outputs), axis=-1)
 
+    heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
     heatmap = np.maximum(heatmap, 0)
     heatmap /= (np.max(heatmap) + 1e-8)
-    heatmap = cv2.resize(heatmap, (224, 224))
 
+    heatmap = cv2.resize(heatmap.numpy(), (224, 224))
     return heatmap, int(class_idx)
 
-# =====================================================
-# 🔹 HEATMAP OVERLAY
-# =====================================================
+
 def overlay_heatmap(original_img, heatmap, alpha=0.4):
     img = np.array(original_img.convert("RGB").resize((224, 224)))
     heatmap = np.uint8(255 * heatmap)
@@ -333,9 +341,7 @@ def overlay_heatmap(original_img, heatmap, alpha=0.4):
     overlay = cv2.addWeighted(img, 1 - alpha, heatmap, alpha, 0)
     return overlay
 
-# =====================================================
-# 🔹 PDF EXPORT FUNCTION
-# =====================================================
+
 def export_pdf(report_text, img, heatmap_img, filename="report.pdf"):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
@@ -361,16 +367,17 @@ def export_pdf(report_text, img, heatmap_img, filename="report.pdf"):
     buffer.seek(0)
     return buffer
 
-# =====================================================
-# 🔹 FILE UPLOAD
-# =====================================================
+
+# ------------------
+# File Upload
+# ------------------
 uploaded_file = st.file_uploader("📤 Upload Lung CT Scan / X-ray", type=["png", "jpg", "jpeg"])
 
 if uploaded_file:
     img = Image.open(uploaded_file)
 
     if not is_valid_xray(img):
-        st.error("❌ Invalid or poor-quality medical image. Please upload a clear X-ray/CT image.")
+        st.error("❌ Invalid or poor-quality medical image. Upload a clear X-ray/CT.")
     else:
         col1, col2 = st.columns(2)
 
@@ -393,6 +400,7 @@ if uploaded_file:
             st.metric("Inference Time", f"{inference_time:.2f} sec")
             st.metric("Model Version", model_version)
 
+        # ---- Grad-CAM ----
         heatmap, _ = generate_gradcam(model, img_array)
         overlay = overlay_heatmap(img, heatmap)
 
@@ -403,17 +411,20 @@ if uploaded_file:
         with col4:
             st.image(overlay, caption="Highlighted Regions", use_column_width=True)
 
+        # ---- Interpretation ----
         st.subheader("🧪 Explainability & Recommendations")
         if label == "Malignant":
-            st.error("⚠ Malignant nodule detected. Please consult an oncologist immediately.")
+            st.error("⚠ Malignant nodule detected. Consult an oncologist immediately.")
         elif label == "Benign":
-            st.warning("⚠ Benign nodule detected. Regular monitoring recommended.")
+            st.warning("⚠ Benign nodule detected. Follow-up check recommended.")
         else:
-            st.success("✅ Normal lungs detected. Continue regular check-ups.")
+            st.success("✅ Normal lungs. Continue routine check-ups.")
 
         if symptoms:
             st.info(f"📌 Reported symptoms: {', '.join(symptoms)}")
 
+        # ---- PDF Report ----
+        st.subheader("📤 Export Report")
         report_text = f"""
         Patient Report
         -------------------------
@@ -429,7 +440,6 @@ if uploaded_file:
         """
 
         pdf_buffer = export_pdf(report_text, img, overlay)
-
         st.download_button(
             label="📥 Download Report (PDF)",
             data=pdf_buffer,
